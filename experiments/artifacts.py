@@ -22,6 +22,13 @@ def get(path):
         return json.load(response)
 
 
+def checked_rows(response, key):
+    rows = response[key]
+    if response["total_count"] != len(rows) or len({row["id"] for row in rows}) != len(rows):
+        raise ValueError("incomplete or inconsistent " + key + " listing")
+    return rows
+
+
 def select(artifacts, identity):
     matches = [artifact for artifact in artifacts if artifact["name"] == identity["name"]]
     if len(matches) != 1:
@@ -46,7 +53,7 @@ def check(prefix):
     if not 1 <= producer_attempt <= attempt:
         raise ValueError("artifact was not produced by an eligible attempt")
     identity = {"name": name, "id": int(artifact_id), "digest": digest}
-    artifacts = get(f"/actions/runs/{run_id}/artifacts?per_page=100")["artifacts"]
+    artifacts = checked_rows(get(f"/actions/runs/{run_id}/artifacts?per_page=100"), "artifacts")
     print(json.dumps({"attempt": attempt, "rest_artifacts": [
         {"id": row["id"], "name": row["name"], "digest": row.get("digest"), "expired": row["expired"]}
         for row in artifacts
@@ -72,13 +79,16 @@ def history():
         raise ValueError("attempt cap exceeded")
     entered = False
     for previous in range(1, attempt):
-        jobs = get(f"/actions/runs/{run_id}/attempts/{previous}/jobs?per_page=100")["jobs"]
+        jobs = checked_rows(get(f"/actions/runs/{run_id}/attempts/{previous}/jobs?per_page=100"), "jobs")
         matches = [job for job in jobs if job["name"] == job_name]
         if len(matches) != 1 or matches[0]["status"] != "completed":
             raise ValueError("prior publication job is missing, ambiguous or incomplete")
         job = matches[0]
+        if job["run_id"] != run_id or job["run_attempt"] != previous:
+            raise ValueError("prior publication job does not match the requested attempt")
         steps = [step for step in job["steps"] if step["name"] == "Simulate publication"]
-        if len(steps) != 1 or steps[0]["conclusion"] not in {"skipped", "success"}:
+        if (len(steps) != 1 or steps[0]["status"] != "completed"
+                or steps[0]["conclusion"] not in {"skipped", "success"}):
             raise ValueError("prior publication entry is unknown")
         print(json.dumps({"history_attempt": previous, "job_id": job["id"],
                           "job_started": job["started_at"], "publication": steps[0]["conclusion"]}))
@@ -98,7 +108,15 @@ def negative():
         except ValueError:
             continue
         raise AssertionError("unsafe metadata was accepted")
-    print("6 negative metadata cases stopped")
+    assert checked_rows({"total_count": 1, "artifacts": [good]}, "artifacts") == [good]
+    for response in ({"total_count": 2, "artifacts": [good]},
+                     {"total_count": 2, "artifacts": [good, good]}):
+        try:
+            checked_rows(response, "artifacts")
+        except ValueError:
+            continue
+        raise AssertionError("unsafe listing was accepted")
+    print("8 negative metadata and listing cases stopped")
 
 
 if __name__ == "__main__":
