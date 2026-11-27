@@ -34,7 +34,8 @@ jobs:
       - run: python3 experiments/artifacts.py validate
       - id: name
         run: echo "value=lab-validated-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
-      - id: build
+      - name: Upload validated archive
+        id: build
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ${{ steps.name.outputs.value }}
@@ -65,7 +66,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ./.github/actions/prepare
+      - name: Inspect previous publication jobs
+        id: history
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LAB_JOB: ${{ format('{0} Prepare and Deploy', matrix.mode) }}
+        run: python3 experiments/artifacts.py history
+      - name: Prepare Pages archive
+        uses: ./.github/actions/prepare
         id: prepare
         with:
           build-name: ${{ needs.validate.outputs.build-name }}
@@ -73,19 +81,7 @@ jobs:
           build-digest: ${{ needs.validate.outputs.build-digest }}
           pages-name: ${{ format('lab-{0}-{1}-{2}', matrix.mode == 'A' && 'a' || 'b', github.run_id, github.run_attempt) }}
           token: ${{ github.token }}
-      - name: Check prepared artifact
-        env:
-          PAGES_NAME: ${{ steps.prepare.outputs.pages-name }}
-          PAGES_ID: ${{ steps.prepare.outputs.pages-id }}
-          PAGES_DIGEST: ${{ steps.prepare.outputs.pages-digest }}
-          GH_TOKEN: ${{ github.token }}
-        run: python3 experiments/artifacts.py check PAGES
-      - name: Inspect previous publication jobs
-        id: history
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PUBLICATION_JOB: ${{ format('{0} Prepare and Deploy', matrix.mode) }}
-        run: python3 experiments/artifacts.py history
+          lab-job: ${{ format('{0} Prepare and Deploy', matrix.mode) }}
       - name: Observe internal artifact listing
         if: ${{ matrix.mode == 'A' }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -132,7 +128,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: ./.github/actions/prepare
+      - name: Prepare Pages archive
+        uses: ./.github/actions/prepare
         id: prepare
         with:
           build-name: ${{ needs.validate.outputs.build-name }}
@@ -140,6 +137,7 @@ jobs:
           build-digest: ${{ needs.validate.outputs.build-digest }}
           pages-name: ${{ format('lab-{0}-{1}-{2}', 'c', github.run_id, github.run_attempt) }}
           token: ${{ github.token }}
+          lab-job: C Prepare Pages
 
   publish:
     name: C Deploy
@@ -159,19 +157,31 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Inspect previous publication jobs
+        id: history
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LAB_JOB: ${{ 'C Deploy' }}
+        run: python3 experiments/artifacts.py history
       - name: Check prepared artifact
         env:
           PAGES_NAME: ${{ needs.prepare.outputs.pages-name }}
           PAGES_ID: ${{ needs.prepare.outputs.pages-id }}
           PAGES_DIGEST: ${{ needs.prepare.outputs.pages-digest }}
+          LAB_JOB: C Deploy
           GH_TOKEN: ${{ github.token }}
         run: python3 experiments/artifacts.py check PAGES
-      - name: Inspect previous publication jobs
-        id: history
+      - name: Download Pages archive by ID
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.prepare.outputs.pages-id }}
+          path: publication-archive
+          skip-decompress: true
+          digest-mismatch: error
+      - name: Verify Pages archive bytes
         env:
-          GH_TOKEN: ${{ github.token }}
-          PUBLICATION_JOB: ${{ 'C Deploy' }}
-        run: python3 experiments/artifacts.py history
+          LAB_ARCHIVE_DIGEST: ${{ needs.prepare.outputs.pages-digest }}
+        run: python3 experiments/artifacts.py archive publication-archive
       - name: Observe internal artifact listing
         if: ${{ true }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2

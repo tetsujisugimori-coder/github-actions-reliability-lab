@@ -29,6 +29,66 @@ def checked_rows(response, key):
     return rows
 
 
+VALIDATE = "Validate"
+A = "A Prepare and Deploy"
+B = "B Prepare and Deploy"
+C_PREPARE = "C Prepare Pages"
+C = "C Deploy"
+ALL_JOBS = frozenset({VALIDATE, A, B, C_PREPARE, C})
+RECOVERY = {
+    1: ALL_JOBS, 2: frozenset({A}), 3: frozenset({B}),
+    4: frozenset({C}), 5: frozenset({C_PREPARE, C}), 6: ALL_JOBS,
+}
+ROLES = {"validated": VALIDATE, "a": A, "b": B, "c": C_PREPARE}
+PAGES_PRODUCERS = {A: "a", B: "b", C_PREPARE: "c", C: "c"}
+
+
+def contract():
+    event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
+    label = event["label"]["name"]
+    plans = {"run-rerun-experiment": RECOVERY, "run-rerun-baseline": {1: ALL_JOBS}}
+    run_id = int(os.environ["GITHUB_RUN_ID"])
+    attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
+    job_name = os.environ["LAB_JOB"]
+    head = event["pull_request"]["head"]["sha"]
+    plan = plans.get(label)
+    if run_id <= 0 or plan is None or attempt not in plan or job_name not in plan[attempt]:
+        raise ValueError("unknown execution plan or job not scheduled")
+    if not re.fullmatch(r"[0-9a-f]{40}", head):
+        raise ValueError("invalid pull request head")
+    return run_id, attempt, head, plan, job_name
+
+
+def attempt_jobs(run_id, attempt, head, plan, *, completed=True):
+    expected = plan.get(attempt)
+    if not expected:
+        raise ValueError("unknown attempt membership")
+    endpoint = f"/actions/runs/{run_id}/attempts/{attempt}"
+    receipt = get(endpoint)
+    if (receipt["id"] != run_id or receipt.get("run_attempt") != attempt or receipt.get("head_sha") != head
+            or (completed and receipt.get("status") != "completed")):
+        raise ValueError("attempt receipt does not match run and attempt")
+    rows = checked_rows(get(endpoint + "/jobs?per_page=100"), "jobs")
+    jobs = {row["name"]: row for row in rows}
+    if set(jobs) != expected or len(jobs) != len(rows):
+        raise ValueError("unexpected, missing, or ambiguous job in attempt")
+    for row in rows:
+        if (type(row["id"]) is not int or row["id"] <= 0
+                or row["run_id"] != run_id or row.get("run_attempt", attempt) != attempt
+                or row.get("head_sha") != head
+                or (completed and row["status"] != "completed")):
+            raise ValueError("job identity or completion is inconsistent")
+    return jobs
+
+
+def step(job, name, conclusions):
+    matches = [row for row in job["steps"] if row["name"] == name]
+    if (len(matches) != 1 or matches[0]["status"] != "completed"
+            or matches[0]["conclusion"] not in conclusions):
+        raise ValueError("step evidence is missing or inconsistent: " + name)
+    return matches[0]["conclusion"]
+
+
 def select(artifacts, identity):
     matches = [artifact for artifact in artifacts if artifact["name"] == identity["name"]]
     if len(matches) != 1:
@@ -44,57 +104,109 @@ def select(artifacts, identity):
 
 
 def check(prefix):
-    run_id = int(os.environ["GITHUB_RUN_ID"])
-    attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
+    run_id, attempt, head, plan, job_name = contract()
+    if prefix not in {"BUILD", "PAGES"}:
+        raise ValueError("unknown artifact prefix")
     name, artifact_id, digest = [os.environ.get(prefix + part, "") for part in ("_NAME", "_ID", "_DIGEST")]
-    if not re.fullmatch(fr"lab-[a-z]+-{run_id}-[1-9][0-9]*", name):
-        raise ValueError("invalid artifact identity")
-    producer_attempt = int(name.rsplit("-", 1)[1])
-    if not 1 <= producer_attempt <= attempt:
-        raise ValueError("artifact was not produced by an eligible attempt")
-    identity = {"name": name, "id": int(artifact_id), "digest": digest}
+    match = re.fullmatch(fr"lab-(validated|a|b|c)-{run_id}-([1-9][0-9]*)", name)
+    role = "validated" if prefix == "BUILD" else PAGES_PRODUCERS.get(job_name)
+    if not match or not role or match[1] != role or not re.fullmatch(r"[1-9][0-9]*", artifact_id):
+        raise ValueError("invalid artifact identity or producer role")
+    # Only the immediate producer records a newly uploaded Pages archive without
+    # an independently supplied digest. Every consumer must have one.
+    producer_attempt = int(match[2])
+    recording = (prefix == "PAGES" and ROLES[role] == job_name and producer_attempt == attempt
+                 and os.environ.get("LAB_RECORD_UPLOAD") == "1")
+    if not recording and not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise ValueError("expected artifact digest is missing or invalid")
+    eligible = [number for number in plan if number <= attempt and ROLES[role] in plan[number]]
+    if not eligible or producer_attempt != max(eligible):
+        raise ValueError("artifact is not from the expected producer attempt")
+    jobs = attempt_jobs(run_id, producer_attempt, head, plan, completed=producer_attempt < attempt)
+    producer = jobs[ROLES[role]]
+    if not recording:
+        if producer["status"] != "completed" or producer["conclusion"] != "success":
+            raise ValueError("artifact producer job did not succeed")
+        upload_step = "Upload validated archive" if role == "validated" else "Prepare Pages archive"
+        step(producer, upload_step, {"success"})
     artifacts = checked_rows(get(f"/actions/runs/{run_id}/artifacts?per_page=100"), "artifacts")
     print(json.dumps({"attempt": attempt, "rest_artifacts": [
         {"id": row["id"], "name": row["name"], "digest": row.get("digest"), "expired": row["expired"]}
         for row in artifacts
     ]}))
-    selected = select(artifacts, identity)
+    selected = select(artifacts, {"name": name, "id": int(artifact_id), "digest": digest})
     detail = get(f"/actions/artifacts/{artifact_id}")
-    if detail["digest"] != selected["digest"] or detail["name"] != name or detail["expired"]:
+    if (detail["id"] != int(artifact_id) or detail["digest"] != selected["digest"]
+            or detail["name"] != name or detail["expired"]):
         raise ValueError("artifact listing and ID metadata disagree")
-    event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
     producer_run = detail["workflow_run"]
-    if producer_run["id"] != run_id or producer_run["head_sha"] != event["pull_request"]["head"]["sha"]:
+    if producer_run["id"] != run_id or producer_run["head_sha"] != head:
         raise ValueError("artifact belongs to a different run or head")
-    print(json.dumps({"verified": name, "id": int(artifact_id), "producer_attempt": producer_attempt}))
+    evidence = {"name": name, "id": int(artifact_id), "digest": selected["digest"],
+                "producer_attempt": producer_attempt, "producer_job_id": producer["id"],
+                "producer_job": producer["name"], "head": head, "run_id": run_id}
+    print(json.dumps(evidence))
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
         print("digest=" + selected["digest"], file=output)
+    return evidence
+
+
+def check_archive(directory, digest):
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise ValueError("expected archive digest is missing or invalid")
+    entries = list(Path(directory).iterdir())
+    if len(entries) != 1 or not entries[0].is_file() or entries[0].is_symlink():
+        raise ValueError("expected exactly one regular archive file")
+    with entries[0].open("rb") as archive:
+        observed = "sha256:" + hashlib.file_digest(archive, "sha256").hexdigest()
+    if observed != digest:
+        raise ValueError("archive bytes differ from expected SHA-256")
+    print(json.dumps({"archive_sha256": observed, "bytes": entries[0].stat().st_size}))
 
 
 def history():
-    run_id = int(os.environ["GITHUB_RUN_ID"])
-    attempt = int(os.environ["GITHUB_RUN_ATTEMPT"])
-    job_name = os.environ["PUBLICATION_JOB"]
-    if not 1 <= attempt <= 6:
-        raise ValueError("attempt cap exceeded")
+    run_id, attempt, head, plan, job_name = contract()
+    if job_name not in {A, B, C}:
+        raise ValueError("not a publication job")
     entered = False
+    current = attempt_jobs(run_id, attempt, head, plan, completed=False)
+    job_ids = {job["id"] for job in current.values()}
     for previous in range(1, attempt):
-        jobs = checked_rows(get(f"/actions/runs/{run_id}/attempts/{previous}/jobs?per_page=100"), "jobs")
-        matches = [job for job in jobs if job["name"] == job_name]
-        if len(matches) != 1 or matches[0]["status"] != "completed":
-            raise ValueError("prior publication job is missing, ambiguous or incomplete")
-        job = matches[0]
-        if job["run_id"] != run_id or job["run_attempt"] != previous:
-            raise ValueError("prior publication job does not match the requested attempt")
-        steps = [step for step in job["steps"] if step["name"] == "Simulate publication"]
-        if (len(steps) != 1 or steps[0]["status"] != "completed"
-                or steps[0]["conclusion"] not in {"skipped", "success"}):
-            raise ValueError("prior publication entry is unknown")
+        jobs = attempt_jobs(run_id, previous, head, plan)
+        ids = {row["id"] for row in jobs.values()}
+        if job_ids & ids:
+            raise ValueError("job ID unexpectedly reused across attempts")
+        job_ids |= ids
+        # Membership was verified on the full attempt, not inferred from
+        # absence of the target row. Never ignore an incomplete listing.
+        if job_name not in plan[previous]:
+            print(json.dumps({"history_attempt": previous, "publication": "NOT_SCHEDULED"}))
+            continue
+        job = jobs[job_name]
+        conclusion = step(job, "Simulate publication", {"skipped", "success"})
+        if previous == 1:
+            if job.get("conclusion") != "failure":
+                raise ValueError("initial publication job did not fail as planned")
+            step(job, "Inject pre-send failure in attempt 1", {"failure"})
+            if conclusion != "skipped":
+                raise ValueError("initial mock publication contradicts injected failure")
+        elif entered:
+            if job.get("conclusion") != "success":
+                raise ValueError("repeat-stop job did not complete successfully")
+            step(job, "Report stopped repeat", {"success"})
+            if conclusion != "skipped":
+                raise ValueError("mock publication was repeated after success")
+        elif conclusion == "skipped":
+            raise ValueError("mock publication skipped without prior success")
+        elif job.get("conclusion") != "success":
+            raise ValueError("mock publication succeeded in an inconsistent job")
         print(json.dumps({"history_attempt": previous, "job_id": job["id"],
-                          "job_started": job["started_at"], "publication": steps[0]["conclusion"]}))
-        entered |= steps[0]["conclusion"] == "success"
+                          "job_started": job["started_at"], "publication": conclusion}))
+        # Success evidence can only block; it never authorizes a retry.
+        entered |= conclusion == "success"
     with open(os.environ["GITHUB_OUTPUT"], "a") as output:
         print("entered=" + str(entered).lower(), file=output)
+    return entered
 
 
 def negative():
@@ -123,6 +235,8 @@ if __name__ == "__main__":
     action = sys.argv[1]
     if action == "check":
         check(sys.argv[2])
+    elif action == "archive":
+        check_archive(sys.argv[2], os.environ["LAB_ARCHIVE_DIGEST"])
     elif action == "history":
         history()
     elif action == "negative":
