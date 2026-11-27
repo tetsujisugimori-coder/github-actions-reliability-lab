@@ -1,2 +1,11 @@
-# github-actions-reliability-lab
-Isolated GitHub Actions experiments for reruns, artifacts, and job outputs.
+# GitHub Actions Reliability Lab
+
+GitHub Actionsの再実行、成果物の識別と可視性、成功済みジョブの出力継承を、合成データで検証する研究用リポジトリです。公開ワークフローに限らず、複数ジョブが成果物を受け渡すプロジェクトで検証に使えます。
+
+## 実験の追加
+
+実験ごとにブランチとDraft PRを作り、同じPRに仮説、操作、試行数、停止条件、結果を記録します。初期化はGitHubが作成したREADMEのみです。研究用の変更はPRで管理し、mainへ直接反映しません。
+
+実験には標準Linuxランナーと合成入力を使い、課金なしの利用枠を確認してください。Pages・OIDC・シークレット・外部への書込みを使いません。各ジョブの権限を明示し、成果物は試行別に作成します。削除と上書きは行いません。
+
+- [公開ワークフローの方式A・B・Cと成果物の再実行](experiments/pages-recovery.md)

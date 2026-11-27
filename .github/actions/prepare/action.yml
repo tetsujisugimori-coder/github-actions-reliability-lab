@@ -1,0 +1,93 @@
+name: Prepare a synthetic Pages-shaped artifact
+description: Download the validated build by ID and package it with the fixed official upload action.
+inputs:
+  build-name:
+    required: true
+    description: Name emitted by Validate
+  build-id:
+    required: true
+    description: ID emitted by Validate
+  build-digest:
+    required: true
+    description: Digest emitted by Validate
+  pages-name:
+    required: true
+    description: Attempt-specific candidate name
+  lab-job:
+    required: true
+    description: Fixed workflow job display name
+  token:
+    required: true
+    description: Read-only workflow token
+outputs:
+  pages-name:
+    description: Prepared name
+    value: ${{ inputs.pages-name }}
+  pages-id:
+    description: Prepared ID
+    value: ${{ steps.pages.outputs.artifact_id }}
+  pages-digest:
+    description: Prepared digest
+    value: ${{ steps.metadata.outputs.digest }}
+runs:
+  using: composite
+  steps:
+    - name: Check validated artifact
+      env:
+        BUILD_NAME: ${{ inputs.build-name }}
+        BUILD_ID: ${{ inputs.build-id }}
+        BUILD_DIGEST: ${{ format('sha256:{0}', inputs.build-digest) }}
+        GH_TOKEN: ${{ inputs.token }}
+        LAB_JOB: ${{ inputs.lab-job }}
+      shell: bash
+      run: python3 experiments/artifacts.py check BUILD
+    - name: Download validated build by ID
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        artifact-ids: ${{ inputs.build-id }}
+        path: validated-archive
+        skip-decompress: true
+        digest-mismatch: error
+    - name: Verify synthetic payload
+      shell: bash
+      env:
+        EXPECTED_DIGEST: ${{ inputs.build-digest }}
+      run: |
+        set -euo pipefail
+        shopt -s nullglob dotglob
+        zips=(validated-archive/*)
+        test "${#zips[@]}" = 1
+        test "$(sha256sum -- "${zips[0]}" | cut -d' ' -f1)" = "$EXPECTED_DIGEST"
+        unzip -q -- "${zips[0]}" -d site
+        test "$(find site -type f | wc -l)" = 1
+        grep -Fx 'Synthetic content for the Actions Reliability Lab.' site/site.txt
+    - name: Upload Pages-shaped artifact
+      id: pages
+      uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+      with:
+        name: ${{ inputs.pages-name }}
+        path: site
+        retention-days: 1
+    - name: Record prepared artifact metadata
+      id: metadata
+      env:
+        LAB_RECORD_UPLOAD: "1"
+        PAGES_NAME: ${{ inputs.pages-name }}
+        PAGES_ID: ${{ steps.pages.outputs.artifact_id }}
+        GH_TOKEN: ${{ inputs.token }}
+        LAB_JOB: ${{ inputs.lab-job }}
+      shell: bash
+      run: python3 experiments/artifacts.py check PAGES
+
+    - name: Download prepared archive by ID
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        artifact-ids: ${{ steps.pages.outputs.artifact_id }}
+        path: prepared-archive
+        skip-decompress: true
+        digest-mismatch: error
+    - name: Verify prepared archive bytes
+      env:
+        LAB_ARCHIVE_DIGEST: ${{ steps.metadata.outputs.digest }}
+      shell: bash
+      run: python3 experiments/artifacts.py archive prepared-archive

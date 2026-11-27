@@ -1,0 +1,29 @@
+test_a2_inherits_validate (test_history.History.test_a2_inherits_validate) ... ok
+test_already_published_a_b_at_6 (test_history.History.test_already_published_a_b_at_6) ... ok
+test_already_published_c5_and_c6 (test_history.History.test_already_published_c5_and_c6) ... ok
+test_archive_bytes_mutation (test_history.History.test_archive_bytes_mutation) ... ok
+test_artifact_bad_id_digest_head_and_producer (test_history.History.test_artifact_bad_id_digest_head_and_producer) ... ok
+test_b3_inherits_validate_with_a_only_history (test_history.History.test_b3_inherits_validate_with_a_only_history) ... ok
+test_c4_inherits_prepare_with_a_and_b_only_history (test_history.History.test_c4_inherits_prepare_with_a_and_b_only_history) ... ok
+test_conflicting_publication_steps (test_history.History.test_conflicting_publication_steps) ... ok
+test_consumer_must_have_digest (test_history.History.test_consumer_must_have_digest) ... ok
+test_current_membership_must_be_exact (test_history.History.test_current_membership_must_be_exact) ... ok
+test_duplicate_job_id_across_attempts (test_history.History.test_duplicate_job_id_across_attempts) ... ok
+test_explicit_conflicting_job_attempt (test_history.History.test_explicit_conflicting_job_attempt) ... ok
+test_incomplete_listing_cannot_prove_omission (test_history.History.test_incomplete_listing_cannot_prove_omission) ... ok
+test_job_from_different_head (test_history.History.test_job_from_different_head) ... ok
+test_later_skip_without_success_stops (test_history.History.test_later_skip_without_success_stops) ... ok
+test_metadata_sample_without_row_level_attempt (test_history.History.test_metadata_sample_without_row_level_attempt) ... ok
+test_prior_artifact_must_match_expected_attempt (test_history.History.test_prior_artifact_must_match_expected_attempt) ... ok
+test_repeated_publication_after_success_conflicts (test_history.History.test_repeated_publication_after_success_conflicts) ... ok
+test_required_job_missing (test_history.History.test_required_job_missing) ... ok
+test_unknown_plan (test_history.History.test_unknown_plan) ... ok
+test_unplanned_current_job (test_history.History.test_unplanned_current_job) ... ok
+test_unrelated_initial_failure_does_not_prove_pre_send (test_history.History.test_unrelated_initial_failure_does_not_prove_pre_send) ... ok
+test_wrong_attempt_receipt (test_history.History.test_wrong_attempt_receipt) ... ok
+test_wrong_membership_for_an_expected_omission (test_history.History.test_wrong_membership_for_an_expected_omission) ... ok
+
+----------------------------------------------------------------------
+Ran 24 tests in 0.028s
+
+OK
